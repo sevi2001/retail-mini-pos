@@ -1,0 +1,101 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function validProduct(data, productId) {
+      return data.keys().hasAll([
+        'sku',
+        'name',
+        'category',
+        'unit',
+        'costPrice',
+        'sellingPrice',
+        'stockQty',
+        'isActive',
+        'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'sku',
+        'name',
+        'category',
+        'unit',
+        'costPrice',
+        'sellingPrice',
+        'stockQty',
+        'isActive',
+        'updatedAt'
+      ])
+      && data.sku is string
+      && data.sku == productId
+      && data.sku.matches('^[A-Z0-9_-]{2,40}$')
+      && data.name is string
+      && data.name.size() > 0
+      && data.name.size() <= 120
+      && data.category is string
+      && data.category.size() > 0
+      && data.category.size() <= 60
+      && data.unit in ['pcs', 'kg', 'g', 'L']
+      && data.costPrice is number
+      && data.costPrice >= 0
+      && data.sellingPrice is number
+      && data.sellingPrice >= 0
+      && data.stockQty is number
+      && data.stockQty >= 0
+      && (data.unit != 'pcs' || data.stockQty is int)
+      && data.isActive is bool
+      && data.updatedAt == request.time;
+    }
+
+    match /products/{productId} {
+
+      allow read: if signedIn();
+
+      allow create: if signedIn()
+        && validProduct(request.resource.data, productId)
+        && request.resource.data.isActive == true;
+
+      allow update: if signedIn()
+        && resource.data.isActive == true
+        && validProduct(request.resource.data, productId)
+        && (
+          (
+            request.resource.data.isActive == true
+            && request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly([
+                'name',
+                'category',
+                'unit',
+                'costPrice',
+                'sellingPrice',
+                'stockQty',
+                'updatedAt'
+              ])
+          )
+          ||
+          (
+            request.resource.data.isActive == false
+            && request.resource.data.diff(resource.data)
+              .affectedKeys().hasOnly([
+                'isActive',
+                'updatedAt'
+              ])
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    match /sales/{saleId} {
+      allow read: if signedIn();
+
+      // Enabled later with the secure checkout workflow.
+      allow create, update, delete: if false;
+    }
+  }
+}
