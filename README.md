@@ -63,6 +63,23 @@ Developed as a Software Engineering Take-Home Assessment for **NeoMatrix (Pvt) L
 | Git & GitHub | Version control and source code hosting |
 
 ---
+## 📸 Application Screenshots
+
+### Login Page
+![Login Page](public/screenshots/login.png)
+
+### Dashboard
+![Dashboard](public/screenshots/dashboard.png)
+
+### Product Management
+![Product Management](public/screenshots/products.png)
+
+### Checkout
+![Checkout](public/screenshots/checkout.png)
+
+### Sales History
+![Sales History](public/screenshots/sales-history.png)
+
 
 ## 🚀 Getting Started
 
