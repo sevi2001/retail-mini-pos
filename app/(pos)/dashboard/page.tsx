@@ -3,6 +3,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/context/AuthContext";
 
 import {
   ArrowRight,
@@ -34,6 +36,17 @@ import type { Product } from "@/types/products";
 import type { Sale } from "@/types/sale";
 
 export default function DashboardPage() {
+  const router = useRouter();
+  const { user, role, loading: authLoading } = useAuth();
+  const isManager = role === "manager";
+  const isCashier = role === "cashier";
+
+  useEffect(() => {
+    if (!authLoading && (!user || !role)) {
+      router.replace("/login");
+    }
+  }, [authLoading, user, role, router]);
+
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
 
@@ -50,6 +63,7 @@ export default function DashboardPage() {
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
+    if (!isManager) return;
     const unsubscribe = subscribeToProducts(
       (data) => {
         setProducts(data);
@@ -63,9 +77,10 @@ export default function DashboardPage() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [isManager]);
 
   useEffect(() => {
+    if (!isManager) return;
     const unsubscribe = subscribeToSales(
       (data) => {
         setSales(data);
@@ -79,7 +94,7 @@ export default function DashboardPage() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [isManager]);
 
   // Refresh the current date every minute.
   useEffect(() => {
@@ -153,6 +168,58 @@ export default function DashboardPage() {
       iconClass: "bg-amber-100 text-amber-600",
     },
   ];
+
+  if (authLoading || !user || !role) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f5f7fb]">
+        <LoaderCircle className="animate-spin text-blue-600" size={36} />
+      </main>
+    );
+  }
+
+  if (isCashier) {
+    return (
+      <div className="flex min-h-screen bg-[#f5f7fb]">
+        <Sidebar />
+        <main className="min-w-0 flex-1 p-4 sm:p-8">
+          <div className="mb-8 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h1 className="text-3xl font-bold text-slate-900">
+                Cashier Dashboard
+              </h1>
+              <p className="mt-2 text-slate-500">
+                Welcome! You can start a new sale below.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+              <CalendarDays size={18} />
+              {new Intl.DateTimeFormat("en-LK", {
+                timeZone: "Asia/Colombo",
+                dateStyle: "medium",
+              }).format(now)}
+            </div>
+          </div>
+          <section className="max-w-2xl rounded-2xl bg-white p-6 shadow-sm sm:p-8">
+            <div className="mb-5 inline-flex rounded-xl bg-blue-100 p-3 text-blue-600">
+              <ShoppingCart size={28} />
+            </div>
+            <h2 className="text-2xl font-bold text-slate-900">
+              Ready for your next sale?
+            </h2>
+            <p className="mt-2 text-slate-500">
+              Open checkout to add products, accept payment, and generate a receipt.
+            </p>
+            <Link
+              href="/checkout"
+              className="mt-6 inline-flex items-center gap-3 rounded-xl bg-blue-600 px-6 py-3 font-semibold text-white transition hover:bg-blue-700"
+            >
+              Start New Sale <ArrowRight size={19} />
+            </Link>
+          </section>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen bg-[#f5f7fb]">

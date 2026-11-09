@@ -27,6 +27,7 @@ import {
 
 import { subscribeToProducts } from "@/lib/products";
 import { formatLKR } from "@/lib/currency";
+import { useAuth } from "@/context/AuthContext";
 
 import {
   calculateBill,
@@ -80,6 +81,8 @@ function getProductImage(product: Product): string | undefined {
 
 export default function CheckoutPage() {
   const router = useRouter();
+  const { user, role, loading: authLoading } = useAuth();
+  const authorized = role === "manager" || role === "cashier";
 
   const [products, setProducts] = useState<Product[]>([]);
   const [cart, setCart] = useState<CartItemType[]>([]);
@@ -113,6 +116,17 @@ export default function CheckoutPage() {
   // ==========================================
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      router.replace("/login");
+    } else if (!authorized) {
+      router.replace("/dashboard");
+    }
+  }, [authLoading, user, authorized, router]);
+
+  useEffect(() => {
+    if (authLoading || !user || !authorized) return;
+
     const unsubscribe = subscribeToProducts(
       (data) => {
         setProducts(data);
@@ -126,7 +140,7 @@ export default function CheckoutPage() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [authLoading, user, authorized]);
 
   // ==========================================
   // ACTIVE PRODUCTS
@@ -231,6 +245,8 @@ export default function CheckoutPage() {
     cashReceived < 0;
 
   const readyToCheckout =
+    !authLoading &&
+    authorized &&
     !loading &&
     !processingSale &&
     !pendingCheckout &&
@@ -435,9 +451,15 @@ export default function CheckoutPage() {
       setDiscountValue(0);
       setCashReceived(0);
 
-      router.push(
-        `/sales?receipt=${encodeURIComponent(result.saleId)}`
-      );
+      if (role === "manager") {
+        router.push(
+          `/sales?receipt=${encodeURIComponent(result.saleId)}`
+        );
+      } else {
+        // Cashiers cannot read the manager-only sales collection.
+        // Stay on checkout and show the confirmed sale reference.
+        setNotice(`Sale completed successfully. Sale ID: ${result.saleId}`);
+      }
     } catch (err) {
       setError(
         err instanceof Error
@@ -508,6 +530,14 @@ export default function CheckoutPage() {
   // ==========================================
   // PAGE UI
   // ==========================================
+
+  if (authLoading || !user || !authorized) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f5f7fb]">
+        <LoaderCircle className="animate-spin text-blue-600" size={36} />
+      </main>
+    );
+  }
 
   return (
     <div className="flex min-h-screen bg-[#f5f7fb]">

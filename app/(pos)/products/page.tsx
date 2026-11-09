@@ -2,6 +2,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/context/AuthContext";
 
 import {
   Archive,
@@ -28,6 +30,8 @@ import { formatLKR } from "@/lib/currency";
 import type { Product } from "@/types/products";
 
 export default function ProductsPage() {
+  const router = useRouter();
+  const { user, isManager, loading: authLoading } = useAuth();
   const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
@@ -39,6 +43,17 @@ export default function ProductsPage() {
   const [message, setMessage] = useState("");
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      router.replace("/login");
+    } else if (!isManager) {
+      router.replace("/checkout");
+    }
+  }, [authLoading, user, isManager, router]);
+
+  useEffect(() => {
+    if (authLoading || !user || !isManager) return;
+
     const unsubscribe = subscribeToProducts(
       (data) => {
         setProducts(data);
@@ -52,7 +67,7 @@ export default function ProductsPage() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [authLoading, user, isManager]);
 
   const activeProducts = useMemo(
     () => products.filter((p) => p.isActive),
@@ -83,18 +98,21 @@ export default function ProductsPage() {
   ).length;
 
   function openAddForm() {
+    if (!isManager) return;
     setEditingProduct(null);
     setShowForm(true);
     setMessage("");
   }
 
   function openEditForm(product: Product) {
+    if (!isManager) return;
     setEditingProduct(product);
     setShowForm(true);
     setMessage("");
   }
 
   async function handleArchive(product: Product) {
+    if (!isManager) return;
     const confirmed = window.confirm(
       `Archive "${product.name}"?\n\nThe product will be hidden from the active inventory but its data will be preserved.`
     );
@@ -120,6 +138,7 @@ export default function ProductsPage() {
   }
 
   async function handleSeed() {
+    if (!isManager) return;
     setSaving(true);
     setError("");
     setMessage("");
@@ -141,6 +160,17 @@ export default function ProductsPage() {
     } finally {
       setSaving(false);
     }
+  }
+
+  if (authLoading || !user || !isManager) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f5f7fb]">
+        <div className="flex items-center gap-3 text-slate-600">
+          <LoaderCircle size={24} className="animate-spin text-blue-600" />
+          {authLoading ? "Checking permissions..." : "Redirecting..."}
+        </div>
+      </main>
+    );
   }
 
   return (

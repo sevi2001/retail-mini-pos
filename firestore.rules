@@ -4,10 +4,29 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Check authentication
     function signedIn() {
       return request.auth != null;
     }
 
+    // Check Manager role
+    function isManager() {
+      return signedIn()
+        && request.auth.token.manager == true;
+    }
+
+    // Check Cashier role
+    function isCashier() {
+      return signedIn()
+        && request.auth.token.cashier == true;
+    }
+
+    // Allow only authorized staff
+    function isStaff() {
+      return isManager() || isCashier();
+    }
+
+    // Validate product data
     function validProduct(data, productId) {
       return data.keys().hasAll([
         'sku',
@@ -52,15 +71,19 @@ service cloud.firestore {
       && data.updatedAt == request.time;
     }
 
+    // PRODUCT RULES
     match /products/{productId} {
 
-      allow read: if signedIn();
+      // Managers and Cashiers can read products
+      allow read: if isStaff();
 
-      allow create: if signedIn()
+      // Only Managers can create products
+      allow create: if isManager()
         && validProduct(request.resource.data, productId)
         && request.resource.data.isActive == true;
 
-      allow update: if signedIn()
+      // Only Managers can edit or archive products
+      allow update: if isManager()
         && resource.data.isActive == true
         && validProduct(request.resource.data, productId)
         && (
@@ -88,13 +111,18 @@ service cloud.firestore {
           )
         );
 
+      // Prevent direct deletion
       allow delete: if false;
     }
 
+    // SALES RULES
     match /sales/{saleId} {
-      allow read: if signedIn();
 
-      // Enabled later with the secure checkout workflow.
+      // Only Managers can read sales history
+      allow read: if isManager();
+
+      // Sales are created only by the secure
+      // server-side checkout API
       allow create, update, delete: if false;
     }
   }

@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useState, FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import {
   LockKeyhole,
@@ -15,7 +15,14 @@ import { useAuth } from "@/context/AuthContext";
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login, user, loading } = useAuth();
+
+  const {
+    login,
+    logout,
+    user,
+    role,
+    loading,
+  } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -24,10 +31,12 @@ export default function LoginPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!loading && user) {
+    if (loading || !user) return;
+
+    if (role === "manager" || role === "cashier") {
       router.replace("/dashboard");
     }
-  }, [user, loading, router]);
+  }, [user, role, loading, router]);
 
   async function handleLogin(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -42,6 +51,29 @@ export default function LoginPage() {
 
     try {
       await login(email.trim(), password);
+
+      // Read the user's latest Firebase custom claims.
+      const currentUser = await import("firebase/auth").then(
+        ({ getAuth }) => getAuth().currentUser
+      );
+
+      if (!currentUser) {
+        throw new Error("Authentication session not found.");
+      }
+
+      const tokenResult = await currentUser.getIdTokenResult(true);
+
+      const isManager = tokenResult.claims.manager === true;
+      const isCashier = tokenResult.claims.cashier === true;
+
+      if (!isManager && !isCashier) {
+        await logout();
+        setError(
+          "Access denied. Your account does not have a Manager or Cashier role."
+        );
+        return;
+      }
+
       router.replace("/dashboard");
     } catch (err: unknown) {
       if (err instanceof FirebaseError) {
@@ -49,32 +81,45 @@ export default function LoginPage() {
           case "auth/invalid-email":
             setError("Please enter a valid email address.");
             break;
+
           case "auth/invalid-credential":
           case "auth/wrong-password":
           case "auth/user-not-found":
             setError("Incorrect email or password.");
             break;
+
           case "auth/too-many-requests":
             setError("Too many attempts. Please try again later.");
             break;
+
           case "auth/network-request-failed":
-            setError("Network error. Check your internet connection.");
+            setError(
+              "Network error. Check your internet connection."
+            );
             break;
+
           default:
             setError("Unable to sign in. Please try again.");
         }
       } else {
-        setError("An unexpected error occurred.");
+        console.error("Login error:", err);
+        setError("Unable to sign in. Please try again.");
       }
     } finally {
       setSubmitting(false);
     }
   }
 
-  if (loading || user) {
+  if (
+    loading ||
+    (user && (role === "manager" || role === "cashier"))
+  ) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#101d35]">
-        <LoaderCircle className="animate-spin text-white" size={40} />
+        <LoaderCircle
+          className="animate-spin text-white"
+          size={40}
+        />
       </main>
     );
   }
@@ -92,7 +137,7 @@ export default function LoginPage() {
           </h1>
 
           <p className="mt-2 text-sm text-slate-500">
-            Sign in to your cashier account
+            Sign in to your Manager or Cashier account
           </p>
         </div>
 
@@ -119,7 +164,7 @@ export default function LoginPage() {
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="cashier@example.com"
+              placeholder="Enter your email"
               autoComplete="email"
               required
               className="w-full rounded-xl border border-slate-200 px-4 py-3 text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
@@ -149,10 +194,16 @@ export default function LoginPage() {
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-label={
+                  showPassword ? "Hide password" : "Show password"
+                }
                 className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
               >
-                {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+                {showPassword ? (
+                  <EyeOff size={20} />
+                ) : (
+                  <Eye size={20} />
+                )}
               </button>
             </div>
           </div>
@@ -164,7 +215,10 @@ export default function LoginPage() {
           >
             {submitting ? (
               <>
-                <LoaderCircle size={19} className="animate-spin" />
+                <LoaderCircle
+                  size={19}
+                  className="animate-spin"
+                />
                 Signing In...
               </>
             ) : (
@@ -177,7 +231,7 @@ export default function LoginPage() {
         </form>
 
         <p className="mt-8 text-center text-xs text-slate-400">
-          Retail Mini-POS | Secure Cashier Access
+          Retail Mini-POS | Secure Manager & Cashier Access
         </p>
       </div>
     </main>

@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import {
   LoaderCircle,
@@ -14,13 +14,17 @@ import {
 import Sidebar from "@/components/Sidebar";
 import Receipt from "@/components/sales/Receipt";
 
+import { useAuth } from "@/context/AuthContext";
 import { subscribeToSales, getSale } from "@/lib/sales";
 import { formatLKR } from "@/lib/currency";
 import type { Sale } from "@/types/sale";
 
 export default function SalesPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const receiptId = searchParams.get("receipt");
+
+  const { user, loading: authLoading, isManager } = useAuth();
 
   const [sales, setSales] = useState<Sale[]>([]);
   const [selectedSale, setSelectedSale] = useState<Sale | null>(null);
@@ -28,7 +32,26 @@ export default function SalesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  // Redirect users who are not Managers.
   useEffect(() => {
+    if (authLoading) return;
+
+    if (!user) {
+      router.replace("/login");
+      return;
+    }
+
+    if (!isManager) {
+      router.replace("/checkout");
+    }
+  }, [authLoading, user, isManager, router]);
+
+  // Subscribe to sales only for Managers.
+  useEffect(() => {
+    if (authLoading || !user || !isManager) {
+      return;
+    }
+
     const unsubscribe = subscribeToSales(
       (data) => {
         setSales(data);
@@ -42,10 +65,13 @@ export default function SalesPage() {
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [authLoading, user, isManager]);
 
+  // Load the requested receipt only for Managers.
   useEffect(() => {
-    if (!receiptId) return;
+    if (authLoading || !user || !isManager || !receiptId) {
+      return;
+    }
 
     let cancelled = false;
 
@@ -68,7 +94,7 @@ export default function SalesPage() {
     return () => {
       cancelled = true;
     };
-  }, [receiptId]);
+  }, [authLoading, user, isManager, receiptId]);
 
   const filteredSales = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -80,10 +106,29 @@ export default function SalesPage() {
     );
   }, [sales, search]);
 
-  const totalRevenue = sales.reduce(
-    (sum, sale) => sum + sale.total,
-    0
+  const totalRevenue = useMemo(
+    () => sales.reduce((sum, sale) => sum + sale.total, 0),
+    [sales]
   );
+
+  // Do not render Manager data while checking permissions.
+  if (authLoading || !user || !isManager) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f5f7fb]">
+        <div className="flex items-center gap-3 text-slate-600">
+          <LoaderCircle
+            size={24}
+            className="animate-spin text-blue-600"
+          />
+          <span>
+            {authLoading
+              ? "Checking account permissions..."
+              : "Redirecting..."}
+          </span>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <div className="flex min-h-screen bg-[#f5f7fb]">
@@ -187,7 +232,10 @@ export default function SalesPage() {
 
                 <tbody className="divide-y divide-slate-100">
                   {filteredSales.map((sale) => (
-                    <tr key={sale.id} className="hover:bg-slate-50">
+                    <tr
+                      key={sale.id}
+                      className="hover:bg-slate-50"
+                    >
                       <td className="px-6 py-4 text-sm font-medium text-slate-900">
                         {sale.invoiceNumber}
                       </td>
