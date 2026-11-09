@@ -14,7 +14,8 @@ import {
 
 import Sidebar from "@/components/Sidebar";
 import CartItem from "@/components/checkout/CartItem";
-
+import { useRouter } from "next/navigation";
+import { completeSale } from "@/lib/sales";
 import { subscribeToProducts } from "@/lib/products";
 import { formatLKR } from "@/lib/currency";
 
@@ -38,6 +39,8 @@ export default function CheckoutPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const router = useRouter();
+  const [processingSale, setProcessingSale] = useState(false);
 
   const [discountType, setDiscountType] =
     useState<DiscountType>("amount");
@@ -58,6 +61,7 @@ export default function CheckoutPage() {
       }
     );
 
+    
     return () => unsubscribe();
   }, []);
 
@@ -241,6 +245,47 @@ export default function CheckoutPage() {
     setNotice("");
   }
 
+  async function handleCompleteSale() {
+    if (!readyToCheckout || processingSale) return;
+  
+    const confirmed = window.confirm(
+      `Complete this cash sale for ${formatLKR(bill.total)}?`
+    );
+  
+    if (!confirmed) return;
+  
+    setProcessingSale(true);
+    setError("");
+    setNotice("");
+  
+    try {
+      const result = await completeSale({
+        items: liveCart.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+        })),
+        discountType,
+        discountValue,
+        cashReceived,
+      });
+  
+      // Clear the local bill only after the server confirms success.
+      setCart([]);
+      setDiscountValue(0);
+      setCashReceived(0);
+  
+      router.push(`/sales?receipt=${encodeURIComponent(result.saleId)}`);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to complete sale."
+      );
+    } finally {
+      setProcessingSale(false);
+    }
+  }
+
   const discountInvalid =
     !Number.isFinite(discountValue) ||
     discountValue < 0 ||
@@ -253,6 +298,7 @@ export default function CheckoutPage() {
 
   const readyToCheckout =
     !loading &&
+    !processingSale &&
     !error &&
     invalidItems.length === 0 &&
     !discountInvalid &&
@@ -280,7 +326,7 @@ export default function CheckoutPage() {
             role="alert"
             className="mb-5 rounded-xl bg-red-50 p-4 text-red-700"
           >
-            Firestore error: {error}
+            Checkout error: {error}
           </div>
         )}
 
@@ -423,7 +469,7 @@ export default function CheckoutPage() {
               <button
                 type="button"
                 onClick={clearCart}
-                disabled={cart.length === 0}
+                disabled={cart.length === 0 || processingSale}
                 title="Clear cart"
                 aria-label="Clear cart"
                 className="rounded-lg p-2 text-red-500 hover:bg-red-50 disabled:opacity-30"
@@ -493,22 +539,24 @@ export default function CheckoutPage() {
                   <option value="percent">%</option>
                 </select>
 
-                <input
-                  type="number"
-                  min="0"
-                  max={
-                    discountType === "percent"
-                      ? 100
-                      : bill.subtotal
-                  }
-                  step="0.01"
-                  value={discountValue}
-                  onChange={(e) =>
-                    setDiscountValue(e.target.valueAsNumber)
-                  }
-                  aria-label="Discount value"
-                  className="min-w-0 rounded-xl border border-slate-200 px-4 py-3 text-slate-900"
-                />
+               
+<input
+  type="number"
+  min="0"
+  max={discountType === "percent" ? 100 : bill.subtotal}
+  step="0.01"
+  value={Number.isFinite(discountValue) ? discountValue : ""}
+  onChange={(e) => {
+    const value = e.target.value;
+
+    setDiscountValue(
+      value === "" ? 0 : Number(value)
+    );
+  }}
+  aria-label="Discount value"
+  className="min-w-0 rounded-xl border border-slate-200 px-4 py-3 text-slate-900"
+/>
+
               </div>
 
               {discountInvalid && (
@@ -559,17 +607,23 @@ export default function CheckoutPage() {
                 Cash Received (Rs.)
               </label>
 
-              <input
-                id="cashReceived"
-                type="number"
-                min="0"
-                step="0.01"
-                value={cashReceived}
-                onChange={(e) =>
-                  setCashReceived(e.target.valueAsNumber)
-                }
-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-lg font-semibold text-slate-900 outline-none focus:border-blue-500"
-              />
+              
+<input
+  id="cashReceived"
+  type="number"
+  min="0"
+  step="0.01"
+  value={Number.isFinite(cashReceived) ? cashReceived : ""}
+  onChange={(e) => {
+    const value = e.target.value;
+
+    setCashReceived(
+      value === "" ? 0 : Number(value)
+    );
+  }}
+  className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-lg font-semibold text-slate-900 outline-none focus:border-blue-500"
+/>
+
 
               <div className="mt-4 flex justify-between text-sm">
                 <span className="text-slate-600">
@@ -601,19 +655,25 @@ export default function CheckoutPage() {
             {/* Sale action */}
             <button
               type="button"
-              disabled
-              title="Sale recording will be enabled in Step 7"
-              className="mt-6 w-full rounded-xl bg-blue-600 px-5 py-4 font-semibold text-white opacity-60"
+              onClick={handleCompleteSale}
+              disabled={!readyToCheckout || processingSale}
+              className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-4 font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              <span className="flex items-center justify-center gap-2">
-                <Banknote size={20} />
-                Complete Sale — Step 7
-              </span>
+              {processingSale ? (
+                <>
+                  <LoaderCircle size={20} className="animate-spin" />
+                  Processing Sale...
+                </>
+              ) : (
+                <>
+                  <Banknote size={20} />
+                  Complete Sale — {formatLKR(bill.total)}
+                </>
+              )}
             </button>
-
             <p className="mt-3 text-center text-xs text-slate-500">
               {readyToCheckout
-                ? "Bill is ready. Secure sale recording will be added in Step 7."
+                ? "Ready to complete this cash sale."
                 : "Add products and enter sufficient cash to prepare a bill."}
             </p>
           </section>
