@@ -1,22 +1,48 @@
 
 import type { Timestamp } from "firebase/firestore";
 
-export const PRODUCT_UNITS = ["pcs", "kg", "g", "L"] as const;
+// ==========================================
+// PRODUCT UNITS
+// ==========================================
 
-export type ProductUnit = (typeof PRODUCT_UNITS)[number];
+export const PRODUCT_UNITS = [
+  "pcs",
+  "kg",
+  "g",
+  "L",
+] as const;
+
+export type ProductUnit =
+  (typeof PRODUCT_UNITS)[number];
+
+// ==========================================
+// PRODUCT INTERFACE
+// ==========================================
 
 export interface Product {
   id: string;
+
   sku: string;
   name: string;
   category: string;
+
   unit: ProductUnit;
+
   costPrice: number;
   sellingPrice: number;
   stockQty: number;
+
   isActive: boolean;
+
+  // Local image path, e.g. /products/red-dhal.jpg
+  imageUrl?: string;
+
   updatedAt: Timestamp | null;
 }
+
+// ==========================================
+// PRODUCT INPUT
+// ==========================================
 
 export type ProductInput = Pick<
   Product,
@@ -27,4 +53,5 @@ export type ProductInput = Pick<
   | "costPrice"
   | "sellingPrice"
   | "stockQty"
+  | "imageUrl"
 >;

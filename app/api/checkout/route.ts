@@ -1,4 +1,4 @@
-
+import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { FieldValue } from "firebase-admin/firestore";
 
@@ -12,11 +12,19 @@ type RequestItem = {
 };
 
 type CheckoutBody = {
+  requestId: string;
   items: RequestItem[];
   discountType: "amount" | "percent";
   discountValue: number;
   cashReceived: number;
 };
+
+class CheckoutError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "CheckoutError";
+  }
+}
 
 function moneyToCents(value: number): number {
   return Math.round(value * 100);
@@ -44,9 +52,24 @@ function validQuantity(value: unknown, unit: string): value is number {
 
   if (unit === "pcs") return Number.isInteger(value);
 
-  return (
-    Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-7
-  );
+  return Math.abs(value * 1000 - Math.round(value * 1000)) < 1e-7;
+}
+
+function fingerprintCheckout(body: CheckoutBody): string {
+  const normalizedItems = [...body.items]
+    .map(({ productId, quantity }) => ({ productId, quantity }))
+    .sort((a, b) => a.productId.localeCompare(b.productId));
+
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        items: normalizedItems,
+        discountType: body.discountType,
+        discountValue: body.discountValue,
+        cashReceived: body.cashReceived,
+      })
+    )
+    .digest("hex");
 }
 
 export async function POST(request: NextRequest) {
@@ -61,28 +84,28 @@ export async function POST(request: NextRequest) {
     }
 
     const token = header.slice(7);
-    const cashier = await getAdminAuth().verifyIdToken(token);
+    let cashier;
+    try {
+      cashier = await getAdminAuth().verifyIdToken(token);
+    } catch {
+      throw new CheckoutError("Invalid or expired authentication token.", 401);
+    }
 
     if (!cashier.email) {
-      return NextResponse.json(
-        { error: "Cashier email is required." },
-        { status: 403 }
-      );
+      throw new CheckoutError("Cashier email is required.", 403);
     }
 
     let body: CheckoutBody;
-
     try {
       body = (await request.json()) as CheckoutBody;
     } catch {
-      return NextResponse.json(
-        { error: "Invalid request body." },
-        { status: 400 }
-      );
+      throw new CheckoutError("Invalid request body.", 400);
     }
 
     if (
       !body ||
+      typeof body.requestId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(body.requestId) ||
       !Array.isArray(body.items) ||
       body.items.length === 0 ||
       body.items.length > 50 ||
@@ -90,24 +113,14 @@ export async function POST(request: NextRequest) {
       !validMoney(body.discountValue) ||
       !validMoney(body.cashReceived)
     ) {
-      return NextResponse.json(
-        { error: "Invalid checkout details." },
-        { status: 400 }
-      );
+      throw new CheckoutError("Invalid checkout details or request ID.", 400);
     }
 
-    if (
-      body.discountType === "percent" &&
-      body.discountValue > 100
-    ) {
-      return NextResponse.json(
-        { error: "Discount cannot exceed 100%." },
-        { status: 400 }
-      );
+    if (body.discountType === "percent" && body.discountValue > 100) {
+      throw new CheckoutError("Discount cannot exceed 100%.", 400);
     }
 
     const ids = new Set<string>();
-
     for (const item of body.items) {
       if (
         !item ||
@@ -118,26 +131,33 @@ export async function POST(request: NextRequest) {
         item.quantity <= 0 ||
         ids.has(item.productId)
       ) {
-        return NextResponse.json(
-          { error: "Invalid or duplicate cart item." },
-          { status: 400 }
-        );
+        throw new CheckoutError("Invalid or duplicate cart item.", 400);
       }
-
       ids.add(item.productId);
     }
 
     const db = getAdminDb();
-    const saleRef = db.collection("sales").doc();
-
+    const saleRef = db.collection("sales").doc(`${cashier.uid}_${body.requestId}`);
+    const payloadHash = fingerprintCheckout(body);
     const productRefs = body.items.map((item) =>
       db.collection("products").doc(item.productId)
     );
 
     const result = await db.runTransaction(async (transaction) => {
-      // All transaction reads happen before any writes.
-      const snapshots = await transaction.getAll(...productRefs);
+      // Read the sale first. Existing requests must not change inventory again.
+      const existingSale = await transaction.get(saleRef);
+      if (existingSale.exists) {
+        if (existingSale.get("requestHash") !== payloadHash) {
+          throw new CheckoutError(
+            "This checkout request ID was already used for different sale details.",
+            409
+          );
+        }
+        return { saleId: saleRef.id, alreadyProcessed: true };
+      }
 
+      // Read all products before performing any writes.
+      const snapshots = await transaction.getAll(...productRefs);
       const saleItems = [];
       let subtotalCents = 0;
 
@@ -146,17 +166,12 @@ export async function POST(request: NextRequest) {
         const snapshot = snapshots[index];
 
         if (!snapshot.exists) {
-          throw new Error(
-            `Product ${requested.productId} was not found.`
-          );
+          throw new CheckoutError(`Product ${requested.productId} was not found.`, 400);
         }
 
         const product = snapshot.data();
-
         if (!product || product.isActive !== true) {
-          throw new Error(
-            `Product ${requested.productId} is unavailable.`
-          );
+          throw new CheckoutError(`Product ${requested.productId} is unavailable.`, 400);
         }
 
         if (
@@ -167,22 +182,22 @@ export async function POST(request: NextRequest) {
           !["pcs", "kg", "g", "L"].includes(product.unit) ||
           !validQuantity(requested.quantity, product.unit)
         ) {
-          throw new Error(
-            `Invalid product data or quantity for ${requested.productId}.`
+          throw new CheckoutError(
+            `Invalid product data or quantity for ${requested.productId}.`,
+            400
           );
         }
 
         if (requested.quantity > product.stockQty + 1e-9) {
-          throw new Error(
-            `Insufficient stock for ${product.name}. Available: ${product.stockQty}.`
+          throw new CheckoutError(
+            `Insufficient stock for ${product.name}. Available: ${product.stockQty}.`,
+            409
           );
         }
 
         const lineCents = Math.round(
-          moneyToCents(product.sellingPrice) *
-            requested.quantity
+          moneyToCents(product.sellingPrice) * requested.quantity
         );
-
         subtotalCents += lineCents;
 
         saleItems.push({
@@ -198,29 +213,24 @@ export async function POST(request: NextRequest) {
 
       const discountCents =
         body.discountType === "percent"
-          ? Math.round(
-              (subtotalCents * body.discountValue) / 100
-            )
+          ? Math.round((subtotalCents * body.discountValue) / 100)
           : moneyToCents(body.discountValue);
 
       if (discountCents > subtotalCents) {
-        throw new Error("Discount exceeds subtotal.");
+        throw new CheckoutError("Discount exceeds subtotal.", 400);
       }
 
       const totalCents = subtotalCents - discountCents;
       const cashCents = moneyToCents(body.cashReceived);
 
       if (cashCents < totalCents) {
-        throw new Error("Cash received is insufficient.");
+        throw new CheckoutError("Cash received is insufficient.", 400);
       }
 
-      // Read and validate everything before writing.
       for (let index = 0; index < body.items.length; index++) {
-        const currentStock = snapshots[index].data()!.stockQty;
+        const currentStock = snapshots[index].data()!.stockQty as number;
         const quantity = body.items[index].quantity;
-
-        const newStock =
-          Math.round((currentStock - quantity) * 1000) / 1000;
+        const newStock = Math.round((currentStock - quantity) * 1000) / 1000;
 
         transaction.update(productRefs[index], {
           stockQty: newStock,
@@ -229,11 +239,12 @@ export async function POST(request: NextRequest) {
       }
 
       const invoiceNumber = `INV-${saleRef.id.toUpperCase()}`;
-
       transaction.create(saleRef, {
         invoiceNumber,
         cashierId: cashier.uid,
         cashierEmail: cashier.email,
+        requestId: body.requestId,
+        requestHash: payloadHash,
         items: saleItems,
         subtotal: subtotalCents / 100,
         discountType: body.discountType,
@@ -246,29 +257,30 @@ export async function POST(request: NextRequest) {
         createdAt: FieldValue.serverTimestamp(),
       });
 
-      return { saleId: saleRef.id };
+      return { saleId: saleRef.id, alreadyProcessed: false };
     });
 
-    return NextResponse.json(result, { status: 201 });
- 
-} catch (error) {
-  console.error("CHECKOUT SERVER ERROR:", error);
+    return NextResponse.json(result, {
+      status: result.alreadyProcessed ? 200 : 201,
+    });
+  } catch (error) {
+    if (error instanceof CheckoutError) {
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status }
+      );
+    }
 
-  const message =
-    error instanceof Error
-      ? error.message
-      : String(error);
-
-  return NextResponse.json(
-    {
-      error: "Checkout failed.",
-      details:
-        process.env.NODE_ENV === "development"
-          ? message
-          : undefined,
-    },
-    { status: 500 }
-  );
-}
-
+    console.error("CHECKOUT SERVER ERROR:", error);
+    return NextResponse.json(
+      {
+        error: "Checkout failed. Retry the same request ID before starting another sale.",
+        details:
+          process.env.NODE_ENV === "development" && error instanceof Error
+            ? error.message
+            : undefined,
+      },
+      { status: 500 }
+    );
+  }
 }

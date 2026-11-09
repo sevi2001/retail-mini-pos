@@ -18,7 +18,7 @@ export default function CartItem({
   onQuantityChange,
   onRemove,
 }: Props) {
-  const step = item.unit === "pcs" ? 1 : 0.001;
+ const step = 1;
   const quantityStep = item.unit === "pcs" ? "1" : "0.001";
 
   return (
